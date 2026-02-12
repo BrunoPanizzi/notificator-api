@@ -18,7 +18,7 @@ const processSchema = z.object({
   f_cnj_number: z.string(),
   f_client: z.number(), // client judice id
   f_situation: z.number(),
-  f_actiontype: z.string(),
+  f_actiontype: z.string().nullable(),
   client_name: z.string(),
   area_name: z.string(),
   parte_adversa: z.string(),
@@ -144,6 +144,15 @@ const agendaAssignmentMapper = (
   type: data.Tipo,
   text: data.Texto,
   client: data.Cliente,
+})
+
+const appointmentsResponseSchema = z.object({
+  success: z.boolean(),
+  messageError: z.string(),
+  draw: z.number(),
+  recordsTotal: z.number(),
+  recordsFiltered: z.number(),
+  data: z.array(z.string()),
 })
 
 type RequestOptions = {
@@ -305,39 +314,47 @@ export class JudiceService {
     }
   }
 
+  private extractAppointment(
+    el: unknown,
+    $: cheerio.CheerioAPI,
+    index: number,
+  ) {
+    const $el = $(el as never)
+    const href = $el.find("a").attr("href")
+    const lawsuitJudiceId = Number.parseInt(href?.replaceAll(/\D/g, "") || "")
+
+    if (!lawsuitJudiceId) {
+      return undefined
+    }
+
+    const lawsuitCNJ = $el.find("a").text()
+
+    const buttons = $el.find("button")
+
+    const [assignmentJudiceId] = buttons
+      .map((_, btn) => {
+        const action = $(btn).attr("onclick")
+        if (action?.includes("loadProceedingAppointmentModal")) {
+          const id = Number.parseInt(action.split(",")[0].replaceAll(/\D/g, ""))
+          return id
+        }
+        return undefined
+      })
+      .toArray()
+      .filter(Boolean)
+
+    return {
+      lawsuitJudiceId,
+      lawsuitCNJ,
+      assignmentJudiceId,
+    }
+  }
+
   private async extractAssignments(data: string) {
     const $ = cheerio.load(data)
 
     return $("div#agenda li:has(div)")
-      .map((_, el) => {
-        const lawsuitJudiceId = Number.parseInt(
-          $(el).find("a").attr("href")?.replaceAll(/\D/g, "") || "",
-        )
-
-        if (!lawsuitJudiceId) {
-          return
-        }
-
-        const lawsuitCNJ = $(el).find("a").text()
-
-        const [assignmentJudiceId] = $(el)
-          .find("button")
-          .map((_, btn) => {
-            const action = $(btn).attr("onclick")
-            if (action?.includes("loadProceedingAppointmentModal")) {
-              return Number.parseInt(action.split(",")[0].replaceAll(/\D/g, ""))
-            }
-            return undefined
-          })
-          .toArray()
-          .filter(Boolean)
-
-        return {
-          lawsuitJudiceId,
-          lawsuitCNJ,
-          assignmentJudiceId,
-        }
-      })
+      .map((i, el) => this.extractAppointment(el, $, i))
       .toArray()
       .filter(Boolean)
   }
@@ -396,6 +413,44 @@ export class JudiceService {
     return await this.extractAssignments(z.string().parse(data))
   }
 
+  async getAppointments() {
+    const data = await this.makeRequest("pgj/appointments/getAppointments", {
+      method: "POST",
+      body: {
+        draw: "1",
+        "columns[0][data]": "0",
+        "columns[0][name]": "",
+        "columns[0][searchable]": "true",
+        "columns[0][orderable]": "false",
+        "columns[0][search][value]": "",
+        "columns[0][search][regex]": "false",
+        start: "0",
+        length: "-1",
+        "search[value]": "",
+        "search[regex]": "false",
+        processId: "0",
+        limitShowScheduling: "10",
+        realMonthPicker: "",
+        schedule: "true",
+        type: "ok",
+      },
+    })
+
+    const parsed = appointmentsResponseSchema.parse(data)
+
+    if (parsed.data.length === 0) {
+      return []
+    }
+
+    const $ = cheerio.load(
+      `<div class="process-list">${parsed.data.join("")}</div>`,
+    )
+
+    return $("li:has(div)")
+      .map((i, el) => this.extractAppointment(el, $, i))
+      .toArray()
+      .filter(Boolean)
+  }
   async completeAssignment(assignmentId: number, lawsuitId: number) {
     // idk if all the fields are necessary, but also idc to figure out
     const form = new FormData()

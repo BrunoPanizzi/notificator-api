@@ -17,7 +17,7 @@ export class AgendaController {
 
   // TODO: move to an use case or service
   handleNotificationTasks: RequestHandler = async (_req, res) => {
-    const agendaAssignments = await this.judiceService.getAssignments()
+    const agendaAssignments = await this.judiceService.getAppointments()
 
     const execution = await this.executionService.create()
 
